@@ -118,6 +118,58 @@ def test_empty_log_fails():
     assert result.first_bad == 0
 
 
+def test_two_writers_on_one_log_keep_a_single_chain(sample_log, key):
+    first = EventLog(sample_log, key, fsync=False)
+    second = EventLog(sample_log, key, fsync=False)  # opened before either writes
+    first.append("note", {"by": "first"})
+    second.append("note", {"by": "second"})
+    first.append("note", {"by": "first again"})
+    result = verify_file(sample_log)
+    assert result.ok, result.reason
+    assert result.records == 7
+
+
+def test_concurrent_threads_never_fork_the_chain(sample_log, key):
+    import threading
+
+    def writer(name):
+        log = EventLog(sample_log, key, fsync=False)
+        for i in range(25):
+            log.append("joint_state", {"writer": name, "i": i})
+
+    threads = [threading.Thread(target=writer, args=(f"w{n}",)) for n in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    result = verify_file(sample_log)
+    assert result.ok, result.reason
+    assert result.records == 4 + 100
+
+
+def test_cut_tail_is_caught_with_an_anchor(sample_log):
+    anchor = verify_file(sample_log).head
+    raw = sample_log.read_bytes()
+    cut = raw[: raw.rstrip(b"\n").rfind(b"\n") + 1]  # drop the last complete record
+    assert verify_bytes(cut).ok  # a hash chain alone can't see this
+    result = verify_bytes(cut, anchor=anchor)
+    assert not result.ok
+    assert result.first_bad == 3
+    assert "anchored record is missing" in result.reason
+
+
+def test_anchor_still_passes_after_legitimate_appends(sample_log, key):
+    anchor = verify_file(sample_log).head[:16]  # a prefix is enough
+    EventLog(sample_log, key, fsync=False).append("note", {"msg": "later event"})
+    result = verify_file(sample_log, anchor=anchor)
+    assert result.ok and result.anchored
+
+
+def test_malformed_anchor_is_rejected(sample_log):
+    with pytest.raises(ValueError):
+        verify_file(sample_log, anchor="xyz")
+
+
 def test_non_ascii_payload_round_trips(tmp_path, key):
     path = tmp_path / "unicode.log"
     EventLog(path, key, fsync=False).append("note", {"msg": "operador detuvo el brazo", "temp_c": 41.5})

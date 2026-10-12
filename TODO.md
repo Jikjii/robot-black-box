@@ -7,5 +7,5 @@
 - [ ] README quickstart and a 60-second demo walkthrough
 
 ## Later (not for the demo)
-- Detect a log that was cut short at the end: periodic signed checkpoints, or anchoring the head hash somewhere external.
+- Anchor the head automatically: `blackbox head` + `verify --anchor` exist; next is publishing periodic anchors to an external timestamping service without manual steps.
 - Keep the signing key in hardware (TPM or secure element) instead of a file.

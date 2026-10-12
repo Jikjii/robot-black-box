@@ -44,17 +44,36 @@ def _cmd_append(args: argparse.Namespace) -> int:
 def _cmd_verify(args: argparse.Namespace) -> int:
     try:
         pinned = keys.load_public_hex(args.pubkey) if args.pubkey else None
-        result = verify_file(args.log, pinned)
+        result = verify_file(args.log, pinned, args.anchor)
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     if result.ok:
         source = "pinned public key" if result.key_pinned else "key from the log itself (pass --pubkey to pin it)"
         print(f"OK: {result.records} records verified, head {result.head[:12]}, checked against {source}")
+        if result.anchored:
+            print("anchor found: no records were cut from the end up to the anchored record")
+        else:
+            print("note: pass --anchor <hash from `blackbox head`> to also prove nothing was cut from the end")
         return 0
     print(f"FAIL: record {result.first_bad}: {result.reason}")
     print(f"{result.records} record(s) before it verified")
     return 1
+
+
+def _cmd_head(args: argparse.Namespace) -> int:
+    try:
+        pinned = keys.load_public_hex(args.pubkey) if args.pubkey else None
+        result = verify_file(args.log, pinned)
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if not result.ok:
+        print(f"FAIL: record {result.first_bad}: {result.reason}")
+        return 1
+    print(f"record {result.records - 1} head {result.head}")
+    print("save this hash somewhere outside the log; `verify --anchor` proves the log still reaches it")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,7 +101,13 @@ def build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify", help="check every record's chain link and signature")
     verify.add_argument("log", help="log file to verify")
     verify.add_argument("--pubkey", help="public key file to pin against (recommended for evidence)")
+    verify.add_argument("--anchor", help="head hash saved earlier with `blackbox head`; proves nothing was cut from the end")
     verify.set_defaults(func=_cmd_verify)
+
+    head = sub.add_parser("head", help="verify a log and print its head hash to save as an anchor")
+    head.add_argument("log", help="log file")
+    head.add_argument("--pubkey", help="public key file to pin against")
+    head.set_defaults(func=_cmd_head)
     return parser
 
 

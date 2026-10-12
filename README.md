@@ -17,6 +17,20 @@ blackbox append incident.log --key robot.key --type fault --data '{"code": "E-21
 blackbox verify incident.log --pubkey robot.key.pub
 ```
 
+### Prove nothing was cut from the end
+
+A hash chain shows that nothing was changed, deleted or reordered, but it can't show on its own that
+the last records weren't dropped. Save the head hash somewhere outside the log (a ticket, an email,
+a timestamping service), then verify against it later:
+
+```bash
+blackbox head incident.log                          # prints the head hash to save
+blackbox verify incident.log --anchor <saved hash>  # fails if the log no longer reaches it
+```
+
+Several processes can append to one log at the same time; each append takes an exclusive file lock
+(POSIX) and re-reads the head, so the chain never forks.
+
 ## Log format (v1)
 
 One record per line in canonical JSON (sorted keys, no whitespace, UTF-8):

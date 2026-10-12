@@ -44,6 +44,34 @@ def test_verify_reports_the_first_bad_record(tmp_path, capsys):
     assert capsys.readouterr().out.startswith("FAIL: record 2:")
 
 
+def test_keygen_force_resets_loose_permissions(tmp_path):
+    keyfile = _keygen(tmp_path)
+    keyfile.chmod(0o644)
+    assert main(["keygen", str(keyfile), "--force"]) == 0
+    assert oct(keyfile.stat().st_mode & 0o777) == "0o600"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_head_then_verify_with_anchor(tmp_path, capsys):
+    keyfile = _keygen(tmp_path)
+    log = tmp_path / "incident.log"
+    for event in ("joint_state", "estop"):
+        assert main(["append", str(log), "--key", str(keyfile), "--type", event]) == 0
+    capsys.readouterr()
+
+    assert main(["head", str(log)]) == 0
+    head = capsys.readouterr().out.split("head ")[1].split()[0]
+    assert len(head) == 64
+
+    assert main(["verify", str(log), "--anchor", head]) == 0
+    assert "anchor found" in capsys.readouterr().out
+
+    raw = log.read_bytes()
+    log.write_bytes(raw[: raw.rstrip(b"\n").rfind(b"\n") + 1])
+    assert main(["verify", str(log), "--anchor", head]) == 1
+    assert "anchored record is missing" in capsys.readouterr().out
+
+
 def test_bad_json_data_is_rejected(tmp_path):
     keyfile = _keygen(tmp_path)
     assert main(["append", str(tmp_path / "x.log"), "--key", str(keyfile), "--type", "note", "--data", "{oops"]) == 2

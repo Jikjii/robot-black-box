@@ -21,10 +21,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
+
+try:  # POSIX file locking; robots run Linux. Without it, use one writer per log.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -66,8 +72,50 @@ class LogError(Exception):
     """Raised when a log can't be opened for appending."""
 
 
+@contextmanager
+def _locked(path: Path) -> Iterator[BinaryIO]:
+    """Open the log for appending under an exclusive inter-process lock (POSIX)."""
+    with open(path, "a+b") as handle:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield handle
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _first_and_last(handle: BinaryIO, path: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Read the genesis and the current head record straight from disk, or None for an empty log."""
+    handle.seek(0, os.SEEK_END)
+    size = handle.tell()
+    if size == 0:
+        return None
+    position, tail = size, b""
+    while position > 0 and tail.count(b"\n") < 2:
+        step = min(65536, position)
+        position -= step
+        handle.seek(position)
+        tail = handle.read(step) + tail
+    if not tail.endswith(b"\n"):
+        raise LogError(f"{path}: last record is incomplete; run `blackbox verify` first")
+    handle.seek(0)
+    try:
+        first = json.loads(handle.readline())
+        last = json.loads(tail[:-1].rsplit(b"\n", 1)[-1])
+        if first["type"] != "genesis" or not isinstance(last["seq"], int) or not _is_hex(last["hash"], 64):
+            raise ValueError("bad genesis or head record")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise LogError(f"{path}: unreadable record; run `blackbox verify` first") from exc
+    return first, last
+
+
 class EventLog:
-    """Writer for a black-box log. Creates the genesis record on first use, resumes otherwise."""
+    """Writer for a black-box log. Creates the genesis record on first use, resumes otherwise.
+
+    Every append re-reads the head record from disk under an exclusive lock, so several writers
+    (threads, processes, `blackbox append` calls) can share one log without forking the chain.
+    """
 
     def __init__(
         self,
@@ -80,52 +128,40 @@ class EventLog:
         self._key = signing_key
         self._pub = keys.public_hex(signing_key)
         self._fsync = fsync
-        if self.path.exists() and self.path.stat().st_size > 0:
-            self._resume()
-        else:
-            self._seq = 0
-            self._prev = GENESIS_PREV
-            self._write(
-                "genesis",
-                {"format": FORMAT, "public_key": self._pub, "device": device},
-                utc_now(),
-            )
+        with _locked(self.path) as handle:
+            ends = _first_and_last(handle, self.path)
+            if ends is None:
+                genesis = {"format": FORMAT, "public_key": self._pub, "device": device}
+                self._write(handle, 0, GENESIS_PREV, "genesis", genesis, utc_now())
+            else:
+                self._check_owner(ends[0])
 
-    def _resume(self) -> None:
-        raw = self.path.read_bytes()
-        if not raw.endswith(b"\n"):
-            raise LogError(f"{self.path}: last record is incomplete; run `blackbox verify` first")
-        lines = raw[:-1].split(b"\n")
-        try:
-            first = json.loads(lines[0])
-            last = json.loads(lines[-1])
-            genesis_key = first["data"]["public_key"] if first["type"] == "genesis" else None
-            next_seq = last["seq"] + 1
-            prev = last["hash"]
-        except (ValueError, KeyError, TypeError) as exc:
-            raise LogError(f"{self.path}: unreadable record; run `blackbox verify` first") from exc
-        if genesis_key != self._pub:
+    def _check_owner(self, genesis: dict[str, Any]) -> None:
+        data = genesis.get("data")
+        if not isinstance(data, dict) or data.get("public_key") != self._pub:
             raise LogError(f"{self.path}: this log was started with a different signing key")
-        self._seq = next_seq
-        self._prev = prev
 
     def append(self, type: str, data: Any = None, ts: str | None = None) -> dict[str, Any]:
         """Append one signed event and return the stored record."""
         if type == "genesis":
             raise ValueError("'genesis' is reserved for the first record")
-        return self._write(type, data, ts or utc_now())
+        with _locked(self.path) as handle:
+            ends = _first_and_last(handle, self.path)
+            if ends is None:
+                raise LogError(f"{self.path}: log is empty; it has lost its genesis record")
+            first, last = ends
+            self._check_owner(first)
+            return self._write(handle, last["seq"] + 1, last["hash"], type, data, ts or utc_now())
 
-    def _write(self, type: str, data: Any, ts: str) -> dict[str, Any]:
-        body = {"v": VERSION, "seq": self._seq, "ts": ts, "type": type, "data": data, "prev": self._prev}
+    def _write(self, handle: BinaryIO, seq: int, prev: str, type: str, data: Any, ts: str) -> dict[str, Any]:
+        body = {"v": VERSION, "seq": seq, "ts": ts, "type": type, "data": data, "prev": prev}
         digest = _digest(body)
         record = {**body, "hash": digest, "sig": self._key.sign(bytes.fromhex(digest)).hex()}
-        with open(self.path, "ab") as handle:
-            handle.write(canonical(record) + b"\n")
-            handle.flush()
-            if self._fsync:
-                os.fsync(handle.fileno())
-        self._seq += 1
-        self._prev = digest
+        handle.seek(0, os.SEEK_END)
+        handle.write(canonical(record) + b"\n")
+        handle.flush()
+        if self._fsync:
+            os.fsync(handle.fileno())
         return record
 
 
@@ -138,14 +174,30 @@ class VerifyResult:
     head: str | None = None
     public_key: str | None = None
     key_pinned: bool = False
+    anchored: bool = False
 
 
-def verify_bytes(raw: bytes, pinned_public_key: str | None = None) -> VerifyResult:
-    """Check every record; stop at the first bad one and say which and why."""
+def normalize_anchor(anchor: str) -> str:
+    """An anchor is a record hash (or a prefix of at least 12 hex characters) saved outside the log."""
+    value = anchor.strip().lower()
+    if not (12 <= len(value) <= 64 and _is_hex(value, len(value))):
+        raise ValueError("an anchor is 12 to 64 hex characters of a record hash (see `blackbox head`)")
+    return value
+
+
+def verify_bytes(
+    raw: bytes, pinned_public_key: str | None = None, anchor: str | None = None
+) -> VerifyResult:
+    """Check every record; stop at the first bad one and say which and why.
+
+    A hash chain alone can't prove nothing was cut off the end. Pass `anchor`, a head hash recorded
+    somewhere outside the log (`blackbox head`), to also prove the log still reaches that record.
+    """
     pinned = pinned_public_key.strip().lower() if pinned_public_key else None
+    expected_anchor = normalize_anchor(anchor) if anchor else None
 
     def bad(index: int, reason: str, good: int, pub: str | None = None) -> VerifyResult:
-        return VerifyResult(False, good, index, reason, None, pub, pinned is not None)
+        return VerifyResult(False, good, index, reason, None, pub, pinned is not None, expected_anchor is not None)
 
     if not raw:
         return bad(0, "log is empty", 0)
@@ -159,6 +211,7 @@ def verify_bytes(raw: bytes, pinned_public_key: str | None = None) -> VerifyResu
     verifier = None
     public_key = None
     prev = GENESIS_PREV
+    anchor_found = False
     for index, line in enumerate(lines):
         is_last = index == len(lines) - 1
         if is_last and not raw.endswith(b"\n"):
@@ -209,12 +262,21 @@ def verify_bytes(raw: bytes, pinned_public_key: str | None = None) -> VerifyResu
         except InvalidSignature:
             return bad(index, "signature does not verify", index, public_key)
         prev = record["hash"]
+        if expected_anchor and prev.startswith(expected_anchor):
+            anchor_found = True
 
-    return VerifyResult(True, len(lines), None, None, prev, public_key, pinned is not None)
+    if expected_anchor and not anchor_found:
+        return bad(
+            len(lines),
+            "anchored record is missing: records were cut from the end, or this is a different log",
+            len(lines),
+            public_key,
+        )
+    return VerifyResult(True, len(lines), None, None, prev, public_key, pinned is not None, expected_anchor is not None)
 
 
-def verify_file(path: str | Path, pinned_public_key: str | None = None) -> VerifyResult:
-    return verify_bytes(Path(path).read_bytes(), pinned_public_key)
+def verify_file(path: str | Path, pinned_public_key: str | None = None, anchor: str | None = None) -> VerifyResult:
+    return verify_bytes(Path(path).read_bytes(), pinned_public_key, anchor)
 
 
 def read_records(path: str | Path) -> Iterator[dict[str, Any]]:

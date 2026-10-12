@@ -42,10 +42,21 @@ def save_private(key: Ed25519PrivateKey, path: str | Path) -> None:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
+    # Write a brand-new owner-only file and move it into place, so an existing file's looser
+    # permissions can never carry over to the new secret.
     path = Path(path)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(pem)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(pem)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def load_private(path: str | Path) -> Ed25519PrivateKey:
