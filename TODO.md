@@ -6,6 +6,10 @@
 - [ ] demo.sh: record a simulated incident, verify, tamper, verify fails, replay, in under a minute
 - [ ] README quickstart and a 60-second demo walkthrough
 
+## Hardening (after the demo; from Codex review on PR #1)
+- [ ] Stream `verify` from the file instead of loading the whole log into memory, so huge logs can't exhaust RAM
+- [ ] Make `keygen` reserve both key paths atomically, so two concurrent runs can't clobber a key or mismatch the pair
+
 ## Later (not for the demo)
 - Anchor the head automatically: `blackbox head` + `verify --anchor` exist; next is publishing periodic anchors to an external timestamping service without manual steps.
 - Keep the signing key in hardware (TPM or secure element) instead of a file.
