@@ -43,7 +43,7 @@ def _cmd_append(args: argparse.Namespace) -> int:
 
 def _cmd_verify(args: argparse.Namespace) -> int:
     try:
-        pinned = keys.load_public_hex(args.pubkey) if args.pubkey else None
+        pinned = keys.load_public_hex(args.pubkey) if args.pubkey is not None else None
         result = verify_file(args.log, pinned, args.anchor)
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -63,7 +63,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
 def _cmd_head(args: argparse.Namespace) -> int:
     try:
-        pinned = keys.load_public_hex(args.pubkey) if args.pubkey else None
+        pinned = keys.load_public_hex(args.pubkey) if args.pubkey is not None else None
         result = verify_file(args.log, pinned)
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

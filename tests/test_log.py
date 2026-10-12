@@ -165,6 +165,12 @@ def test_anchor_still_passes_after_legitimate_appends(sample_log, key):
     assert result.ok and result.anchored
 
 
+@pytest.mark.parametrize("pinned", ["", "   ", "abc"])
+def test_empty_or_malformed_pinned_key_is_rejected(sample_log, pinned):
+    with pytest.raises(ValueError):
+        verify_file(sample_log, pinned)
+
+
 @pytest.mark.parametrize("anchor", ["xyz", "", "   "])
 def test_malformed_or_empty_anchor_is_rejected(sample_log, anchor):
     with pytest.raises(ValueError):

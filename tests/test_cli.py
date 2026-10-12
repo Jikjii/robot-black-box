@@ -75,6 +75,14 @@ def test_head_then_verify_with_anchor(tmp_path, capsys):
     assert main(["verify", str(log), "--anchor", ""]) == 2
 
 
+def test_empty_pubkey_is_an_error_not_a_silent_pass(tmp_path):
+    keyfile = _keygen(tmp_path)
+    log = tmp_path / "incident.log"
+    assert main(["append", str(log), "--key", str(keyfile), "--type", "estop"]) == 0
+    assert main(["verify", str(log), "--pubkey", ""]) == 2
+    assert main(["head", str(log), "--pubkey", ""]) == 2
+
+
 def test_bad_json_data_is_rejected(tmp_path):
     keyfile = _keygen(tmp_path)
     assert main(["append", str(tmp_path / "x.log"), "--key", str(keyfile), "--type", "note", "--data", "{oops"]) == 2

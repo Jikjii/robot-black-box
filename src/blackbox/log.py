@@ -193,7 +193,11 @@ def verify_bytes(
     A hash chain alone can't prove nothing was cut off the end. Pass `anchor`, a head hash recorded
     somewhere outside the log (`blackbox head`), to also prove the log still reaches that record.
     """
-    pinned = pinned_public_key.strip().lower() if pinned_public_key else None
+    # A key passed explicitly must be a valid key, even if empty: never fall back to the log's own key.
+    pinned = None
+    if pinned_public_key is not None:
+        pinned = pinned_public_key.strip().lower()
+        keys.public_from_hex(pinned)  # raises ValueError for empty or malformed keys
     # An explicitly passed anchor must be valid, even if empty (e.g. an unset shell variable).
     expected_anchor = normalize_anchor(anchor) if anchor is not None else None
 
