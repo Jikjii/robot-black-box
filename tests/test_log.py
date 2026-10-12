@@ -165,9 +165,10 @@ def test_anchor_still_passes_after_legitimate_appends(sample_log, key):
     assert result.ok and result.anchored
 
 
-def test_malformed_anchor_is_rejected(sample_log):
+@pytest.mark.parametrize("anchor", ["xyz", "", "   "])
+def test_malformed_or_empty_anchor_is_rejected(sample_log, anchor):
     with pytest.raises(ValueError):
-        verify_file(sample_log, anchor="xyz")
+        verify_file(sample_log, anchor=anchor)
 
 
 def test_non_ascii_payload_round_trips(tmp_path, key):

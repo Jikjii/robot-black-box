@@ -71,6 +71,9 @@ def test_head_then_verify_with_anchor(tmp_path, capsys):
     assert main(["verify", str(log), "--anchor", head]) == 1
     assert "anchored record is missing" in capsys.readouterr().out
 
+    # An empty anchor (say, an unset shell variable) is an error, never a silent pass.
+    assert main(["verify", str(log), "--anchor", ""]) == 2
+
 
 def test_bad_json_data_is_rejected(tmp_path):
     keyfile = _keygen(tmp_path)

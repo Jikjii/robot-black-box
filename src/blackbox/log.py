@@ -194,7 +194,8 @@ def verify_bytes(
     somewhere outside the log (`blackbox head`), to also prove the log still reaches that record.
     """
     pinned = pinned_public_key.strip().lower() if pinned_public_key else None
-    expected_anchor = normalize_anchor(anchor) if anchor else None
+    # An explicitly passed anchor must be valid, even if empty (e.g. an unset shell variable).
+    expected_anchor = normalize_anchor(anchor) if anchor is not None else None
 
     def bad(index: int, reason: str, good: int, pub: str | None = None) -> VerifyResult:
         return VerifyResult(False, good, index, reason, None, pub, pinned is not None, expected_anchor is not None)
